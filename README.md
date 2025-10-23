@@ -44,3 +44,18 @@ git add .gitattributes
 - `linuxbook.ir` content and `stallman.org` pages: check their site terms before redistribution.
 - The `justforfun_persian.pdf` file may be copyrighted; if redistribution is not permitted,
   prefer distributing a small sample and a download script/URL instead of the full file.
+
+
+## Data Sources (external)
+
+- **PDF:** «فقط برای تفریح - داستان یک انقلاب اتفاقی» (لینوس توروالدز / دیوید دیاموند، ترجمهٔ جادی)  
+  لینک: https://jadi.net/
+
+- **وب:** کتاب «لینوکس و زندگی» از جادی  
+  لینک: https://linuxbook.ir/all.html
+
+- **ویکی‌پدیا (FA/EN):**  
+  ریچارد استالمن · لینوس توروالدز · لینوکس · پروژه گنو · نرم‌افزار آزاد · بنیاد نرم‌افزار آزاد
+
+- **HTML snapshots:** لینک‌های داخلی وب‌سایت https://stallman.org که به‌صورت Web Scraping استخراج می‌شوند (کد نمونه در نوت‌بوک/اسکریپت).
+
