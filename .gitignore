@@ -37,3 +37,7 @@ data/
 backend/.venv/
 backend/.env
 
+
+# Backend
+backend/.venv/
+backend/.env

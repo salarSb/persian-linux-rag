@@ -6,12 +6,43 @@ from ..core.config import settings
 def retrieve_by_embedding(query_embedding: List[float], k: int) -> list[Document]:
     client = get_chroma_client()
     if not client:
-        raise RuntimeError("Chroma client not available. Check CHROMA_PATH.")
+        raise RuntimeError(f"Chroma client not available. CHROMA_PATH={settings.CHROMA_PATH!r}")
+
+    # List collections for diagnostics
     try:
-        collection = client.get_or_create_collection(settings.CHROMA_COLLECTION)
+        available = [c.name for c in client.list_collections()]
     except Exception as e:
-        raise RuntimeError(f"Failed to open Chroma collection '{settings.CHROMA_COLLECTION}': {e}")
-    out = collection.query(query_embeddings=[query_embedding], n_results=k)
+        available = [f"<error listing collections: {e}>"]
+
+    # Strict: do NOT create a new collection by accident
+    try:
+        collection = client.get_collection(settings.CHROMA_COLLECTION)
+    except Exception as e:
+        raise RuntimeError(
+            f"Collection '{settings.CHROMA_COLLECTION}' not found at CHROMA_PATH={settings.CHROMA_PATH!r}. "
+            f"Available: {available}. Original error: {e}"
+        )
+
+    # Sanity: count first
+    try:
+        n = collection.count()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed counting docs in collection '{settings.CHROMA_COLLECTION}'. "
+            f"CHROMA_PATH={settings.CHROMA_PATH!r} available={available} error={e}"
+        )
+    if n == 0:
+        # Graceful: empty index
+        return []
+
+    try:
+        out = collection.query(query_embeddings=[query_embedding], n_results=k)
+    except Exception as e:
+        raise RuntimeError(
+            f"Chroma query failed for collection '{settings.CHROMA_COLLECTION}' at "
+            f"CHROMA_PATH={settings.CHROMA_PATH!r}. Available={available}. Original error: {e}"
+        )
+
     docs = out.get("documents", [[]])[0]
     metadatas = out.get("metadatas", [[]])[0]
     ids = out.get("ids", [[]])[0]

@@ -8,7 +8,6 @@ langchain-experimental==0.3.4
 langchain-tavily==0.2.12
 langchain-text-splitters==0.3.11
 
-chromadb==0.5.5
 cohere>=5.0.0
 pypdfium2>=4.30.0
 beautifulsoup4>=4.12.0

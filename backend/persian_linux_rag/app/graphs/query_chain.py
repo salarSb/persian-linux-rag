@@ -1,7 +1,11 @@
 from typing import List, Dict
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
+from langchain_core.runnables import (
+    RunnableLambda,
+    RunnableParallel,
+    RunnablePassthrough,
+)
 from langchain_core.output_parsers import StrOutputParser
 from langchain_cohere import ChatCohere
 from ..models.schemas import AskResponse, Citation
@@ -16,16 +20,24 @@ SYSTEM_PROMPT = (
     "منابع را در نظر داشته باش و با داده‌های بازیابی‌شده سازگار بمان."
 )
 
+
 def _format_context(docs: List[Document]) -> str:
     parts = []
     for i, d in enumerate(docs, start=1):
         parts.append(f"[{i}] {d.page_content}")
     return "\n\n".join(parts)
 
+
 def mock_answer(question: str, top_k: int) -> AskResponse:
     demo_citations = [
-        Citation(source="mock:justforfun", snippet="نمونه‌ای از متن برای تست ساختار پاسخ.", url=None),
-        Citation(source="mock:stallman", snippet="نمونهٔ دیگری برای ارجاع و نمایش.", url=None),
+        Citation(
+            source="mock:justforfun",
+            snippet="نمونه‌ای از متن برای تست ساختار پاسخ.",
+            url=None,
+        ),
+        Citation(
+            source="mock:stallman", snippet="نمونهٔ دیگری برای ارجاع و نمایش.", url=None
+        ),
     ]
     return AskResponse(
         answer="(حالت ساختگی) این یک پاسخ نمونه است تا اطمینان بگیریم سرویس فعال است.",
@@ -35,12 +47,14 @@ def mock_answer(question: str, top_k: int) -> AskResponse:
         notes="Set MODE=live + COHERE_API_KEY + Chroma to enable the real pipeline.",
     )
 
+
 def _retrieve_runner(inputs: Dict):
     question = inputs["question"]
     embedder = get_query_embedder()
     q_emb = embedder.embed_query(question)
     docs = retrieve_by_embedding(q_emb, k=settings.RETRIEVE_K)
     return {"question": question, "retrieved_docs": docs}
+
 
 def _rerank_runner(inputs: Dict):
     question = inputs["question"]
@@ -55,37 +69,52 @@ def _rerank_runner(inputs: Dict):
         ranked_docs.append(docs[idx])
     return {"question": question, "ranked_docs": ranked_docs}
 
+
 def _prepare_prompt_inputs(inputs: Dict):
     question = inputs["question"]
     ranked_docs: List[Document] = inputs["ranked_docs"]
     context = _format_context(ranked_docs)
     return {"question": question, "context": context, "ranked_docs": ranked_docs}
 
+
 def build_chain():
     retriever = RunnableLambda(_retrieve_runner)
     reranker = RunnableLambda(_rerank_runner)
     prep = RunnableLambda(_prepare_prompt_inputs)
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", "پرسش:\n{question}\n\nمتون کمکی:\n{context}")
-    ])
-    llm = ChatCohere(model=settings.COHERE_CHAT_MODEL, temperature=0.2)
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", SYSTEM_PROMPT),
+            ("human", "پرسش:\n{question}\n\nمتون کمکی:\n{context}"),
+        ]
+    )
+    llm = ChatCohere(
+        model=settings.COHERE_CHAT_MODEL,
+        temperature=0.2,
+        cohere_api_key=settings.COHERE_API_KEY,
+    )
     parser = StrOutputParser()
 
-    chain = (
-        RunnableParallel(question=RunnablePassthrough())
-        | retriever
-        | reranker
-        | prep
+    # ✅ This pipeline produces {"question","context","ranked_docs"}
+    pipeline = (
+        RunnableParallel(question=RunnablePassthrough()) | retriever | reranker | prep
     )
 
-    answer_chain = (lambda x: {"question": x["question"], "context": x["context"]}) | prompt | llm | parser
+    # ✅ Now answer_chain consumes the pipeline’s dict
+    answer_chain = (
+        pipeline
+        | (lambda x: {"question": x["question"], "context": x["context"]})
+        | prompt
+        | llm
+        | parser
+    )
 
+    # ✅ And ranked_docs comes from the same pipeline output
     final = RunnableParallel(
         answer=answer_chain,
-        ranked_docs=RunnableLambda(lambda x: x["ranked_docs"]),
+        ranked_docs=pipeline | RunnableLambda(lambda x: x["ranked_docs"]),
     )
     return final
+
 
 def answer_question_lc(question: str, top_k: int) -> AskResponse:
     chain = build_chain()
@@ -94,11 +123,16 @@ def answer_question_lc(question: str, top_k: int) -> AskResponse:
     citations = []
     for d in docs:
         meta = d.metadata or {}
-        citations.append(Citation(
-            source=meta.get("source") or meta.get("doc_id") or meta.get("id") or "unknown",
-            snippet=d.page_content[:220],
-            url=meta.get("url"),
-        ))
+        citations.append(
+            Citation(
+                source=meta.get("source")
+                or meta.get("doc_id")
+                or meta.get("id")
+                or "unknown",
+                snippet=d.page_content[:220],
+                url=meta.get("url"),
+            )
+        )
     return AskResponse(
         answer=out["answer"],
         citations=citations,
