@@ -1,0 +1,5 @@
+langchain==0.3.27
+langchain-core==0.3.79
+langchain-community==0.3.31
+langchain-cohere==0.4.6
+chromadb==0.5.23
