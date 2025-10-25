@@ -32,3 +32,8 @@ Thumbs.db
 
 data/
 
+
+# Backend venv & env
+backend/.venv/
+backend/.env
+
