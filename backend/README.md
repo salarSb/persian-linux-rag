@@ -1,43 +1,131 @@
-# Persian Linux RAG – Backend (LangChain Edition, Phase 1)
+# Persian Linux RAG — Backend (LangChain)
 
-This backend uses **LangChain** for the query pipeline:
-- LC **Runnables** for composition
-- **ChatCohere** for generation
-- **CohereEmbeddings** for query embeddings
-- **ChromaDB** (direct client) for vector search, returned as LangChain `Document`s
-- **Cohere Rerank** on retrieved chunks
-- **FastAPI** for the HTTP API
+A FastAPI backend that answers Linux/Free-Software questions using a RAG pipeline built with **LangChain**, **Cohere** (chat, embeddings, rerank), and **Chroma** (persistent vector store).  
+It supports **token streaming via SSE**, **language-aware answers** (English/Persian), and **diagnostic endpoints**.
 
-> Why direct Chroma client? It avoids package conflicts while still returning LC `Document`s.
-> We can swap to `langchain-chroma` in Phase 1.2 if your environment allows a compatible set.
+---
+
+## Features
+
+- **LangChain runnables** pipeline: *retrieve → rerank → generate*
+- **ChatCohere** for generation, **CohereEmbeddings** for query embeddings
+- **Cohere Rerank** to reorder retrieved chunks
+- **Chroma** persistent vector store (local on disk)
+- **SSE streaming** endpoint (`/ask/stream`)
+- **Language auto-detect**: replies in the same language as the question (EN/FA)
+- **Diagnostics**: `/sources` shows collections and counts
+- **Rich error JSON** with stack traces for debugging (in dev)
+
+---
+
+## Project structure
+
+```
+backend/
+├─ persian_linux_rag/
+│  ├─ main.py
+│  └─ app/
+│     ├─ api/
+│     │  ├─ health.py
+│     │  ├─ ask.py
+│     │  ├─ ask_stream.py
+│     │  ├─ sources.py
+│     │  ├─ feedback.py
+│     │  └─ ingest.py
+│     ├─ core/
+│     │  ├─ config.py
+│     │  └─ deps.py
+│     ├─ adapters/
+│     │  ├─ embeddings_lc.py
+│     │  ├─ vectordb.py
+│     │  └─ cohere_client.py
+│     ├─ graphs/
+│     │  └─ query_chain.py
+│     └─ models/
+│        └─ schemas.py
+├─ requirements.txt
+├─ constraints.txt
+└─ .env.example
+```
+
+---
+
+## Requirements
+
+- **Python**: 3.11.x recommended
+- **Cohere API key**
+- **Chroma** persisted vector store
+
+---
 
 ## Quickstart
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt -c constraints.txt
-
-# Optional: set env
 cp .env.example .env
-# then edit .env
-
 uvicorn persian_linux_rag.main:app --reload
 ```
 
-Open http://127.0.0.1:8000/docs
+---
 
-### Modes
-- **mock** (default): `/ask` returns a shaped test response
-- **live**: real pipeline (Cohere + Chroma). Requires `COHERE_API_KEY` and an existing Chroma collection.
+## Configuration (`.env`)
+
+```env
+MODE=live
+COHERE_API_KEY=xxx
+COHERE_CHAT_MODEL=command-r-08-2024
+COHERE_EMBED_MODEL=embed-multilingual-v3.0
+COHERE_RERANK_MODEL=rerank-multilingual-v3.0
+CHROMA_PATH=../collections/llm_corpus
+CHROMA_COLLECTION=llm_corpus
+RETRIEVE_K=12
+FETCH_K=60
+RERANK_TOP_N=6
+RETRIEVER_IMPL=raw
+RETRIEVER_SEARCH_TYPE=mmr
+ANONYMIZED_TELEMETRY=false
+```
+
+---
 
 ## Endpoints
-- `GET /health`
-- `POST /ask` → `{ answer, citations[], used_k, mode }`
-- `POST /feedback` (stub)
-- `POST /ingest` (stub)
 
-## How it works (live path)
-1) **Retriever**: embed query (LC `CohereEmbeddings.embed_query`) → search Chroma by embedding (direct Chroma client)  
-2) **Rerank**: Cohere Rerank over retrieved chunks  
-3) **Generate**: `ChatCohere` with a Persian system prompt + compact context  
-4) **Return**: answer + citations (top ranked chunks)
+### `GET /health`
+Check backend status.
+
+### `POST /ask`
+Ask question — returns JSON answer with citations.
+
+### `POST /ask/stream`
+SSE streaming version (live tokens).
+
+### `GET /sources`
+Show Chroma diagnostics.
+
+---
+
+## Troubleshooting
+
+- **Missing key:** ensure `COHERE_API_KEY` is set.
+- **max_seq_id error:** version mismatch in `chromadb`.
+- **Telemetry errors:** harmless; disable with `ANONYMIZED_TELEMETRY=false`.
+
+---
+
+## Example usage
+
+```bash
+curl -X POST http://127.0.0.1:8000/ask   -H 'Content-Type: application/json'   -d '{"question":"What is Linux?","top_k":6}'
+```
+
+**Streaming:**
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/ask/stream   -H 'Content-Type: application/json'   -d '{"question":"What is Linux?","top_k":6}'
+```
+
+---
+
+© 2025 Persian Linux RAG — Backend Phase 1.1
