@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True)
 
@@ -19,7 +20,11 @@ class Settings(BaseSettings):
 
     # RAG knobs
     RETRIEVE_K: int = 12
-    FETCH_K: int = 30
+    FETCH_K: int = 60
     RERANK_TOP_N: int = 6
+
+    RETRIEVER_IMPL: str = "lc"
+    RETRIEVER_SEARCH_TYPE: str = "mmr"
+
 
 settings = Settings()

@@ -9,6 +9,8 @@ from langchain_core.runnables import (
 )
 from langchain_core.output_parsers import StrOutputParser
 from langchain_cohere import ChatCohere
+from langchain_chroma import Chroma as LCChroma
+from ..core.deps import get_chroma_client
 from ..models.schemas import AskResponse, Citation
 from ..core.config import settings
 from ..adapters.embeddings_lc import get_query_embedder
@@ -54,12 +56,28 @@ def mock_answer(question: str, top_k: int) -> AskResponse:
     )
 
 
-def _retrieve_runner(inputs: Dict):
-    question = inputs["question"]
+def _make_lc_retriever():
+    """Return an LC retriever (MMR or similarity) over the existing persisted store."""
+    client = get_chroma_client()
+    if not client:
+        raise RuntimeError(f"Chroma client not available. CHROMA_PATH={settings.CHROMA_PATH!r}")
     embedder = get_query_embedder()
-    q_emb = embedder.embed_query(question)
-    docs = retrieve_by_embedding(q_emb, k=settings.RETRIEVE_K)
-    return {"question": question, "retrieved_docs": docs}
+    vectordb = LCChroma(
+        client=client,
+        collection_name=settings.CHROMA_COLLECTION,
+        embedding_function=embedder,
+    )
+    # MMR params: k=final results, fetch_k=initial pool, lambda_mult: trade-off (0→diversity, 1→relevance)
+    search_kwargs = {
+        "k": settings.RETRIEVE_K,
+        "fetch_k": settings.FETCH_K,
+        "lambda_mult": 0.7,  # good starting point; tune 0.5–0.8
+    }
+    retriever = vectordb.as_retriever(
+        search_type=settings.RETRIEVER_SEARCH_TYPE,  # "mmr" or "similarity"
+        search_kwargs=search_kwargs,
+    )
+    return retriever
 
 
 def _rerank_runner(inputs: Dict):
@@ -80,18 +98,16 @@ def _prepare_prompt_inputs(inputs: Dict):
     question = inputs["question"]
     ranked_docs: List[Document] = inputs["ranked_docs"]
     context = _format_context(ranked_docs)
-    lang = _detect_lang(question)
-    lang_directive = "Answer in English." if lang == "en" else "به فارسی پاسخ بده."
-    return {
-        "question": question,
-        "context": context,
-        "ranked_docs": ranked_docs,
-        "lang_directive": lang_directive,
-    }
+    lang_directive = "Answer in English." if _detect_lang(question) == "en" else "به فارسی پاسخ بده."
+    return {"question": question, "context": context, "ranked_docs": ranked_docs, "lang_directive": lang_directive}
 
 
 def build_chain():
-    retriever = RunnableLambda(_retrieve_runner)
+    lc_retriever = _make_lc_retriever()
+    retrieve_stage = RunnableParallel(
+        question=RunnablePassthrough(),
+        retrieved_docs=lc_retriever,
+    )
     reranker = RunnableLambda(_rerank_runner)
     prep = RunnableLambda(_prepare_prompt_inputs)
 
@@ -105,26 +121,19 @@ def build_chain():
         ]
     )
 
-    llm = ChatCohere(
-        model=settings.COHERE_CHAT_MODEL,
-        temperature=0.2,
-        cohere_api_key=settings.COHERE_API_KEY,
-    )
+    llm = ChatCohere(model=settings.COHERE_CHAT_MODEL, temperature=0.2,
+                     cohere_api_key=settings.COHERE_API_KEY)
     parser = StrOutputParser()
 
     pipeline = (
-        RunnableParallel(question=RunnablePassthrough()) | retriever | reranker | prep
+        retrieve_stage
+        | reranker
+        | prep
     )
 
     answer_chain = (
         pipeline
-        | (
-            lambda x: {
-                "question": x["question"],
-                "context": x["context"],
-                "lang_directive": x["lang_directive"],
-            }
-        )
+        | (lambda x: {"question": x["question"], "context": x["context"], "lang_directive": x["lang_directive"]})
         | prompt
         | llm
         | parser
