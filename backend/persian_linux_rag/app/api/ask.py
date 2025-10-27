@@ -1,5 +1,3 @@
-# app/api/ask.py
-
 from fastapi import APIRouter, HTTPException
 from ..models.schemas import AskRequest, AskResponse
 from ..core.deps import get_mode
@@ -20,14 +18,8 @@ def ask(payload: AskRequest):
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         tb = traceback.format_exc()
-        # Optional: log tb to console too
         print(tb, file=sys.stderr)
-        # Return rich error info
         raise HTTPException(
             status_code=500,
-            detail={
-                "type": type(e).__name__,
-                "message": str(e),
-                "trace": tb,
-            },
+            detail={"type": type(e).__name__, "message": str(e), "trace": tb},
         )

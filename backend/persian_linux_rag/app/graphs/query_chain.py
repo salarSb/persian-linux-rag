@@ -8,19 +8,19 @@ from langchain_core.runnables import (
     RunnablePassthrough,
 )
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_cohere import ChatCohere
-from langchain_chroma import Chroma as LCChroma
-from ..core.deps import get_chroma_client
 from ..models.schemas import AskResponse, Citation
 from ..core.config import settings
 from ..adapters.embeddings_lc import get_query_embedder
 from ..adapters.vectordb import retrieve_by_embedding
 from ..adapters.cohere_client import rerank_with_cohere
+from ..core.deps import get_chroma_client
 
 SYSTEM_PROMPT = (
     "You are a concise, accurate assistant focused on GNU/Linux and free software. "
     "Ground answers in the provided context when possible. "
-    "If unsure, say you’re unsure. Always keep answers clear and cite the most relevant snippets."
+    "If unsure, say you're unsure. Keep answers clear and cite the most relevant snippets."
 )
 
 
@@ -57,27 +57,46 @@ def mock_answer(question: str, top_k: int) -> AskResponse:
 
 
 def _make_lc_retriever():
-    """Return an LC retriever (MMR or similarity) over the existing persisted store."""
+    try:
+        try:
+            from langchain_chroma import Chroma as LCChroma
+        except Exception:
+            from langchain_community.vectorstores import Chroma as LCChroma
+    except Exception as e:
+        raise RuntimeError(f"LangChain Chroma not available: {e}")
     client = get_chroma_client()
     if not client:
-        raise RuntimeError(f"Chroma client not available. CHROMA_PATH={settings.CHROMA_PATH!r}")
+        raise RuntimeError(
+            f"Chroma client not available. CHROMA_PATH={settings.CHROMA_PATH!r}"
+        )
     embedder = get_query_embedder()
     vectordb = LCChroma(
         client=client,
         collection_name=settings.CHROMA_COLLECTION,
         embedding_function=embedder,
     )
-    # MMR params: k=final results, fetch_k=initial pool, lambda_mult: trade-off (0→diversity, 1→relevance)
     search_kwargs = {
         "k": settings.RETRIEVE_K,
         "fetch_k": settings.FETCH_K,
-        "lambda_mult": 0.7,  # good starting point; tune 0.5–0.8
+        "lambda_mult": 0.7,
     }
     retriever = vectordb.as_retriever(
-        search_type=settings.RETRIEVER_SEARCH_TYPE,  # "mmr" or "similarity"
+        search_type=settings.RETRIEVER_SEARCH_TYPE,
         search_kwargs=search_kwargs,
     )
     return retriever
+
+
+def _retrieve_runner(inputs: Dict):
+    question = inputs["question"]
+    if settings.RETRIEVER_IMPL.lower() == "lc":
+        retriever = _make_lc_retriever()
+        docs = retriever.invoke(question)
+        return {"question": question, "retrieved_docs": docs}
+    embedder = get_query_embedder()
+    q_emb = embedder.embed_query(question)
+    docs = retrieve_by_embedding(q_emb, k=settings.RETRIEVE_K)
+    return {"question": question, "retrieved_docs": docs}
 
 
 def _rerank_runner(inputs: Dict):
@@ -98,19 +117,20 @@ def _prepare_prompt_inputs(inputs: Dict):
     question = inputs["question"]
     ranked_docs: List[Document] = inputs["ranked_docs"]
     context = _format_context(ranked_docs)
-    lang_directive = "Answer in English." if _detect_lang(question) == "en" else "به فارسی پاسخ بده."
-    return {"question": question, "context": context, "ranked_docs": ranked_docs, "lang_directive": lang_directive}
+    lang = _detect_lang(question)
+    lang_directive = "Answer in English." if lang == "en" else "به فارسی پاسخ بده."
+    return {
+        "question": question,
+        "context": context,
+        "ranked_docs": ranked_docs,
+        "lang_directive": lang_directive,
+    }
 
 
 def build_chain():
-    lc_retriever = _make_lc_retriever()
-    retrieve_stage = RunnableParallel(
-        question=RunnablePassthrough(),
-        retrieved_docs=lc_retriever,
-    )
+    retriever = RunnableLambda(_retrieve_runner)
     reranker = RunnableLambda(_rerank_runner)
     prep = RunnableLambda(_prepare_prompt_inputs)
-
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
@@ -120,20 +140,26 @@ def build_chain():
             ),
         ]
     )
-
-    llm = ChatCohere(model=settings.COHERE_CHAT_MODEL, temperature=0.2,
-                     cohere_api_key=settings.COHERE_API_KEY)
+    llm = ChatCohere(
+        model=settings.COHERE_CHAT_MODEL,
+        temperature=0.2,
+        cohere_api_key=settings.COHERE_API_KEY,
+    )
     parser = StrOutputParser()
 
     pipeline = (
-        retrieve_stage
-        | reranker
-        | prep
+        RunnableParallel(question=RunnablePassthrough()) | retriever | reranker | prep
     )
 
     answer_chain = (
         pipeline
-        | (lambda x: {"question": x["question"], "context": x["context"], "lang_directive": x["lang_directive"]})
+        | (
+            lambda x: {
+                "question": x["question"],
+                "context": x["context"],
+                "lang_directive": x["lang_directive"],
+            }
+        )
         | prompt
         | llm
         | parser
@@ -144,6 +170,37 @@ def build_chain():
         ranked_docs=pipeline | RunnableLambda(lambda x: x["ranked_docs"]),
     )
     return final
+
+
+def prepare_prompt_bundle(question: str) -> Dict:
+    ctx = _retrieve_runner({"question": question})
+    ctx = _rerank_runner(ctx)
+    prep = _prepare_prompt_inputs(ctx)
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(
+            content=f"{prep['lang_directive']}\n\nQuestion:\n{question}\n\nContext:\n{prep['context']}"
+        ),
+    ]
+    citations = []
+    for d in prep["ranked_docs"]:
+        meta = d.metadata or {}
+        citations.append(
+            Citation(
+                source=meta.get("source")
+                or meta.get("doc_id")
+                or meta.get("id")
+                or "unknown",
+                snippet=d.page_content[:220],
+                url=meta.get("url"),
+            )
+        )
+    return {
+        "messages": messages,
+        "citations": citations,
+        "ranked_docs": prep["ranked_docs"],
+        "lang_directive": prep["lang_directive"],
+    }
 
 
 def answer_question_lc(question: str, top_k: int) -> AskResponse:

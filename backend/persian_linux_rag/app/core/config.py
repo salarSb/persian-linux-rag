@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     FETCH_K: int = 60
     RERANK_TOP_N: int = 6
 
-    RETRIEVER_IMPL: str = "lc"
-    RETRIEVER_SEARCH_TYPE: str = "mmr"
+    RETRIEVER_IMPL: str = "raw"  # "raw" | "lc"
+    RETRIEVER_SEARCH_TYPE: str = "mmr"  # "mmr" | "similarity"
 
 
 settings = Settings()
