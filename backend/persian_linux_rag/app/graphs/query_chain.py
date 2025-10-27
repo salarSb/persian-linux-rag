@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -15,9 +16,9 @@ from ..adapters.vectordb import retrieve_by_embedding
 from ..adapters.cohere_client import rerank_with_cohere
 
 SYSTEM_PROMPT = (
-    "تو یک دستیار دانای فارسی‌زبان دربارهٔ لینوکس و نرم‌افزار آزاد هستی. "
-    "تا حد امکان کوتاه و دقیق پاسخ بده و اگر مطمئن نیستی، صادقانه بگو. "
-    "منابع را در نظر داشته باش و با داده‌های بازیابی‌شده سازگار بمان."
+    "You are a concise, accurate assistant focused on GNU/Linux and free software. "
+    "Ground answers in the provided context when possible. "
+    "If unsure, say you’re unsure. Always keep answers clear and cite the most relevant snippets."
 )
 
 
@@ -26,6 +27,11 @@ def _format_context(docs: List[Document]) -> str:
     for i, d in enumerate(docs, start=1):
         parts.append(f"[{i}] {d.page_content}")
     return "\n\n".join(parts)
+
+
+def _detect_lang(text: str) -> str:
+    """Return 'fa' if Persian/Arabic script is present, else 'en'."""
+    return "fa" if re.search(r"[\u0600-\u06FF]", text) else "en"
 
 
 def mock_answer(question: str, top_k: int) -> AskResponse:
@@ -74,19 +80,31 @@ def _prepare_prompt_inputs(inputs: Dict):
     question = inputs["question"]
     ranked_docs: List[Document] = inputs["ranked_docs"]
     context = _format_context(ranked_docs)
-    return {"question": question, "context": context, "ranked_docs": ranked_docs}
+    lang = _detect_lang(question)
+    lang_directive = "Answer in English." if lang == "en" else "به فارسی پاسخ بده."
+    return {
+        "question": question,
+        "context": context,
+        "ranked_docs": ranked_docs,
+        "lang_directive": lang_directive,
+    }
 
 
 def build_chain():
     retriever = RunnableLambda(_retrieve_runner)
     reranker = RunnableLambda(_rerank_runner)
     prep = RunnableLambda(_prepare_prompt_inputs)
+
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
-            ("human", "پرسش:\n{question}\n\nمتون کمکی:\n{context}"),
+            (
+                "human",
+                "{lang_directive}\n\nQuestion:\n{question}\n\nContext:\n{context}",
+            ),
         ]
     )
+
     llm = ChatCohere(
         model=settings.COHERE_CHAT_MODEL,
         temperature=0.2,
@@ -94,21 +112,24 @@ def build_chain():
     )
     parser = StrOutputParser()
 
-    # ✅ This pipeline produces {"question","context","ranked_docs"}
     pipeline = (
         RunnableParallel(question=RunnablePassthrough()) | retriever | reranker | prep
     )
 
-    # ✅ Now answer_chain consumes the pipeline’s dict
     answer_chain = (
         pipeline
-        | (lambda x: {"question": x["question"], "context": x["context"]})
+        | (
+            lambda x: {
+                "question": x["question"],
+                "context": x["context"],
+                "lang_directive": x["lang_directive"],
+            }
+        )
         | prompt
         | llm
         | parser
     )
 
-    # ✅ And ranked_docs comes from the same pipeline output
     final = RunnableParallel(
         answer=answer_chain,
         ranked_docs=pipeline | RunnableLambda(lambda x: x["ranked_docs"]),
